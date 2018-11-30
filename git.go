@@ -31,15 +31,6 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 
 	info := &RepoInfo{IsRepo: true, VCS: AnsiString{Plain: "git", Colored: vcscolor.Sprint("git")}, VCSColor: vcscolor}
 
-	// Get repo name
-	output, exitCode, err = execAndGetOutput("git", workingDirectory,
-		"rev-parse", "--show-toplevel")
-	if err == nil {
-		info.RepoName = path.Base(strings.TrimSpace(output))
-	} else {
-		info.RepoName = "unknown"
-	}
-
 	// Figure out branch status TODO: This could be optimized I bet
 	branchColor := color.New(color.FgGreen)
 
@@ -53,6 +44,15 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 		branchColor = color.New(color.FgYellow)
 	} else if strings.Contains(output, "Your branch is ahead of") {
 		branchColor = color.New(color.FgMagenta)
+	}
+
+	// Get repo name
+	output, exitCode, err = execAndGetOutput("git", workingDirectory,
+		"rev-parse", "--show-toplevel")
+	if err == nil {
+		info.RepoName = path.Base(strings.TrimSpace(output))
+	} else {
+		info.RepoName = "unknown"
 	}
 
 	// Figure out branches
