@@ -45,8 +45,9 @@ Two lines containing:
 
 ### --output=statusline
 
-Three lines containing:
+Four lines containing:
 
+- VCS name
 - The repository name (pulled from root directory)
 - Branch tracking information, as: `master...origin/master`
 - Change counts, as: `M:1 -:1 ?:1`

@@ -6,6 +6,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/pborman/getopt/v2"
 	"os"
+	"strings"
 )
 
 type OutputType int
@@ -99,8 +100,7 @@ func loadRepo() *RepoInfo {
 	case Git:
 		return NewGitRepoInfo(&WORKING_DIRECTORY)
 	case Mercurial:
-		// TODO
-		return nil
+		return NewMercurialRepoInfo(&WORKING_DIRECTORY)
 	}
 
 	// cases Detect, default, and other invalid options
@@ -114,7 +114,11 @@ func loadRepo() *RepoInfo {
 	}
 
 	// Mercurial next
-	// TODO
+	info = NewMercurialRepoInfo(&WORKING_DIRECTORY)
+	if info != nil && info.IsRepo {
+		// It was a hg repo
+		return info
+	}
 
 	// All done
 	return nil
@@ -135,10 +139,20 @@ func main() {
 
 	switch OUTPUT_TYPE {
 	case Prompt:
-		fmt.Printf("%s%s%s%s\n", info.VCS.Colored, info.VCSColor.Sprint(":<"), info.BranchName.Colored, info.VCSColor.Sprint(">"))
+		fmt.Printf("%s%s%s%s", info.VCS.Colored, info.VCSColor.Sprint(":<"), info.BranchName.Colored, info.VCSColor.Sprint(">"))
+		if len(info.OtherBranches) > 0 {
+			// Get just the colored names
+			branches := []string{}
+			for _, b := range info.OtherBranches {
+				branches = append(branches, b.Colored)
+			}
+			fmt.Printf(" {%s}", strings.Join(branches, ", "))
+		}
+		fmt.Println()
 		fmt.Println(info.Status.Colored)
 		os.Exit(0)
 	case StatusLine:
+		fmt.Println(info.VCS.Colored)
 		fmt.Println(info.RepoName)
 		fmt.Println(info.BranchTrackingInfo.Colored)
 		fmt.Println(info.Status.Colored)

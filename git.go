@@ -11,6 +11,8 @@ import (
 )
 
 func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
+	codes := RepoChangeStatusFieldDefinitions["git"]
+
 	// TODO: Make this not run a command to get this data
 	// Go do a git status in that folder
 	output, exitCode, err := execAndGetOutput("git", workingDirectory,
@@ -21,7 +23,7 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 		return nil
 	} else if exitCode == 128 {
 		// Not a git repo
-		return &RepoInfo{} // IsRepo defaults to false
+		return &RepoInfo{IsRepo: false, VCS: AnsiString{Plain: codes.VCS, Colored: codes.VCS}}
 	} else if exitCode != 0 {
 		// Some kind of git error!
 		return nil
@@ -29,7 +31,7 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 
 	vcscolor := color.New(color.FgHiCyan)
 
-	info := &RepoInfo{IsRepo: true, VCS: AnsiString{Plain: "git", Colored: vcscolor.Sprint("git")}, VCSColor: vcscolor}
+	info := &RepoInfo{IsRepo: true, VCS: AnsiString{Plain: codes.VCS, Colored: vcscolor.Sprint(codes.VCS)}, VCSColor: vcscolor}
 
 	// Figure out branch status TODO: This could be optimized I bet
 	branchColor := color.New(color.FgGreen)
@@ -72,14 +74,14 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 					branch := strings.TrimPrefix(line, "* ")
 					info.BranchName = AnsiString{Plain: branch, Colored: branchColor.Sprint(branch)}
 
-					// Update the "git" color if this is the master branch
+					// Update the git color if this is the master branch
 					if branch == "master" || branch == "mainline" {
 						info.VCSColor = color.New(color.FgHiGreen)
 						info.VCS.Colored = info.VCSColor.Sprint(info.VCS.Plain)
 					}
 				} else {
 					branch := strings.TrimSpace(line)
-					info.OtherBranches = append(info.OtherBranches, AnsiString{Plain: branch, Colored: branch})
+					info.OtherBranches = append(info.OtherBranches, AnsiString{Plain: branch, Colored: color.WhiteString(branch)})
 				}
 			}
 		}
@@ -92,8 +94,8 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 	if err == nil {
 		// Get per-file status, as well as tracking info
 
-		status := make(map[rune]int, len(RepoChangeStatusFieldDefinitions))
-		for field := range RepoChangeStatusFieldDefinitions {
+		status := make(map[rune]int, len(codes.StatusCodes))
+		for field := range codes.StatusCodes {
 			status[field] = 0
 		}
 
@@ -126,7 +128,8 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 			}
 		}
 
-		colorStatus := buildColoredStatusStringFromMap(status)
+		info.ChangeStatusCounts = status
+		colorStatus := buildColoredStatusStringFromMap(status, &codes)
 
 		info.Status = AnsiString{Plain: stripANSI(colorStatus), Colored: colorStatus}
 
@@ -136,23 +139,4 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 	}
 
 	return info
-}
-
-func buildColoredStatusStringFromMap(status map[rune]int) string {
-	retval := ""
-
-	for _, key := range RepoChangeStatusFieldDefinitionsOrderedKeys {
-		count := status[key]
-
-		if count > 0 {
-			if retval != "" {
-				retval += " "
-			}
-
-			retval += RepoChangeStatusFieldDefinitions[key].OutputColor.Sprintf("%c:%d",
-				RepoChangeStatusFieldDefinitions[key].OutputCharacter, count)
-		}
-	}
-
-	return retval
 }
