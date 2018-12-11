@@ -2,6 +2,9 @@ package main
 
 /**
  * Mercurial Repo Information
+ *
+ * Look at [this](https://github.com/robbyrussell/oh-my-zsh/blob/master/plugins/branch/branch.plugin.zsh) for
+ * possibly a faster way to get some data.
  */
 
 import (
