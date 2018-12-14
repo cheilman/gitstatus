@@ -68,6 +68,7 @@ type RepoInfo struct {
 	OtherBranches      []AnsiString `json:"branches"`
 	ChangeStatusCounts map[rune]int `json:"status_counts"`
 	Status             AnsiString   `json:"status"`
+	RepoPath           string       `json:"repo_path"`
 }
 
 func buildColoredStatusStringFromMap(status map[rune]int, codes *RepoChangeStatusVCSFields) string {

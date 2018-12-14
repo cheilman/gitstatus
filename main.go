@@ -156,6 +156,7 @@ func main() {
 		fmt.Println(info.RepoName)
 		fmt.Println(info.BranchTrackingInfo.Colored)
 		fmt.Println(info.Status.Colored)
+		fmt.Println(info.RepoPath)
 		os.Exit(0)
 	}
 

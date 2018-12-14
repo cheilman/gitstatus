@@ -60,9 +60,11 @@ func NewMercurialRepoInfo(workingDirectory *string) *RepoInfo {
 	// Get repo name
 	output, exitCode, err = execAndGetOutput("hg", workingDirectory, "root")
 	if err == nil {
-		info.RepoName = path.Base(strings.TrimSpace(output))
+		info.RepoPath = strings.TrimSpace(output)
+		info.RepoName = path.Base(info.RepoPath)
 	} else {
 		info.RepoName = "unknown"
+		info.RepoPath = *workingDirectory
 	}
 
 	// Figure out branches

@@ -52,9 +52,11 @@ func NewGitRepoInfo(workingDirectory *string) *RepoInfo {
 	output, exitCode, err = execAndGetOutput("git", workingDirectory,
 		"rev-parse", "--show-toplevel")
 	if err == nil {
-		info.RepoName = path.Base(strings.TrimSpace(output))
+		info.RepoPath = strings.TrimSpace(output)
+		info.RepoName = path.Base(info.RepoPath)
 	} else {
 		info.RepoName = "unknown"
+		info.RepoPath = *workingDirectory
 	}
 
 	// Figure out branches

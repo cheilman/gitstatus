@@ -45,12 +45,13 @@ Two lines containing:
 
 ### --output=statusline
 
-Four lines containing:
+Lines containing:
 
 - VCS name
 - The repository name (pulled from root directory)
 - Branch tracking information, as: `master...origin/master`
 - Change counts, as: `M:1 -:1 ?:1`
+- Full path to the repository
 
 ## Options
 
