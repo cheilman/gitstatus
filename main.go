@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/fatih/color"
 	"github.com/pborman/getopt/v2"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -47,6 +46,12 @@ type Request struct {
 	Output      OutputType
 	Vcs         RepoType
 	StatusCheck bool
+}
+
+// Vcs Status Response
+type Response struct {
+	ExitCode int
+	Content  string
 }
 
 // Execution options
@@ -187,9 +192,17 @@ func loadRepo(req Request) *RepoInfo {
 	return nil
 }
 
-func buildResponse(req Request, info RepoInfo) string {
+func buildResponse(req Request, info *RepoInfo) Response {
 	// TODO: Color handling isn't thread-safe / handles multiple requests well
 	color.NoColor = !req.ForceColor
+
+	if req.Directory == "" {
+		return Response{ExitCode: 2, Content: "Directory must be non-empty."}
+	}
+
+	if info == nil {
+		return Response{ExitCode: 1, Content: "Error loading repository information."}
+	}
 
 	switch req.Output {
 	case Prompt:
@@ -205,7 +218,7 @@ func buildResponse(req Request, info RepoInfo) string {
 		}
 		response.WriteString("\n")
 		response.WriteString(info.Status.Colored + "\n")
-		return response.String()
+		return Response{ExitCode: 0, Content: response.String()}
 	case StatusLine:
 		var response strings.Builder
 		response.WriteString(info.VCS.Colored + "\n")
@@ -213,26 +226,21 @@ func buildResponse(req Request, info RepoInfo) string {
 		response.WriteString(info.BranchTrackingInfo.Colored + "\n")
 		response.WriteString(info.Status.Colored + "\n")
 		response.WriteString(info.RepoPath + "\n")
-		return response.String()
+		return Response{ExitCode: 0, Content: response.String()}
 	}
 
 	// Full and default output types
 	output, _ := json.MarshalIndent(info, "", " ")
-	return string(output) + "\n"
+	return Response{ExitCode: 0, Content: string(output) + "\n"}
 }
 
 func singleMain(req Request) {
-	if req.Directory == "" {
-		os.Exit(2)
-	}
-
 	info := loadRepo(req)
 
-	if info == nil {
-		os.Exit(1)
-	}
+	response := buildResponse(req, info)
 
-	fmt.Print(buildResponse(req, *info))
+	fmt.Print(response.Content)
+	os.Exit(response.ExitCode)
 }
 
 func cleanUpExistingSocket(options ExecutionOptions) {
@@ -257,9 +265,12 @@ func cleanUpExistingSocket(options ExecutionOptions) {
 	}
 }
 
-func writeResponse(connection net.Conn, response string) {
+func writeResponse(connection net.Conn, response Response) {
+
+	output, _ := json.MarshalIndent(response, "", " ")
+
 	writer := bufio.NewWriter(connection)
-	_, err := writer.WriteString(response)
+	_, err := writer.WriteString(string(output) + "\n")
 	if err == nil {
 		_ = writer.Flush()
 	} else {
@@ -276,25 +287,21 @@ func handleConnection(connection net.Conn) {
 	var req Request
 	err := decoder.Decode(&req)
 	if err != nil {
-		writeResponse(connection, fmt.Sprintf("Error decoding request: %s\n", err))
+		writeResponse(connection, Response{ExitCode: 100, Content: fmt.Sprintf("Error decoding request: %s\n", err)})
 		return
 	}
 
 	if req.StatusCheck {
 		// All we need to do is say we're up
-		writeResponse(connection, "OK\n")
+		writeResponse(connection, Response{ExitCode: 0, Content: "OK\n"})
 		return
 	}
 
 	// Load repo
 	repo := loadRepo(req)
-	if repo == nil {
-		writeResponse(connection, "Error loading repository information.\n")
-		return
-	}
 
 	// Build response
-	response := buildResponse(req, *repo)
+	response := buildResponse(req, repo)
 	writeResponse(connection, response)
 }
 
@@ -362,17 +369,19 @@ func clientMain(req Request, options ExecutionOptions) {
 		log.Fatalf("Error encoding request: %s", err)
 	}
 
-	response, err := ioutil.ReadAll(connection)
+	decoder := json.NewDecoder(connection)
+	var response Response
+	err = decoder.Decode(&response)
 	if err != nil {
-		log.Fatalf("Error reading all from connection: %s", err)
+		log.Fatalf("Error decoding response: %s\n", err)
 	}
 
-	_, err = os.Stdout.Write(response)
+	_, err = os.Stdout.WriteString(response.Content)
 	if err != nil {
 		log.Fatalf("Error outputting response: %s", err)
 	}
 
-	// TODO: Need to handle errors better/have an exit code
+	os.Exit(response.ExitCode)
 }
 
 func daemonCheckMain(options ExecutionOptions) {
@@ -393,18 +402,14 @@ func daemonCheckMain(options ExecutionOptions) {
 		os.Exit(127)
 	}
 
-	reader := bufio.NewReader(connection)
-	line, err := reader.ReadString('\n')
+	decoder := json.NewDecoder(connection)
+	var response Response
+	err = decoder.Decode(&response)
 	if err != nil {
-		log.Fatalf("Error reading line from connection: %s", err)
-		os.Exit(2)
+		log.Fatalf("Error decoding response: %s\n", err)
 	}
-	if strings.Contains(line, "OK") {
-		os.Exit(0)
-	} else {
-		log.Fatalf("Got invalid response from server: '%s'", line)
-		os.Exit(3)
-	}
+
+	os.Exit(response.ExitCode)
 }
 
 func main() {
