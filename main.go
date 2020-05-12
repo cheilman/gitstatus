@@ -25,11 +25,21 @@ const (
 	Mercurial RepoType = 2
 )
 
-var WORKING_DIRECTORY = ""
-var OUTPUT_TYPE OutputType
-var REPO_TYPE RepoType
+// Vcs Status Request
+type Request struct {
+	ForceColor bool
+	Directory string
+	Output OutputType
+	Vcs RepoType
+}
 
-func parseOptions() {
+// Daemon startup options
+type DaemonOptions struct {
+	Enabled bool
+	SockPath string
+}
+
+func parseOptions() (Request, DaemonOptions, error) {
 	// Set up options
 	forcecolor := getopt.BoolLong("color", 'c', "Force colored output.")
 
@@ -40,6 +50,10 @@ func parseOptions() {
 
 	vcstype := getopt.StringLong("vcs", 'r', "detect", "Version Control System, from [detect, git, hg]")
 
+	daemon := getopt.BoolLong("daemon", 'D', "Run as a daemon, listening on a socket for requests (does not fork).")
+
+	sockpath := getopt.StringLong("socketpath",  'S', "", "What path to create a listening socket on?  Defaults to $HOME/.vcsstatus-sock")
+
 	// Parse
 
 	getopt.Parse()
@@ -48,73 +62,85 @@ func parseOptions() {
 		color.NoColor = false
 	}
 
-	WORKING_DIRECTORY = *workingdir
+	dir := *workingdir
 
-	if WORKING_DIRECTORY == "" {
+	if dir == "" {
 		fullPath, err := os.Getwd()
 		if err != nil {
-			// Can't figure out working directory
-			panic("Can not figure out working directory!")
+			return Request{}, DaemonOptions{Enabled: false}, err
 		}
-		WORKING_DIRECTORY = fullPath
+		dir = fullPath
 	}
 
+	var output OutputType
 	if *outputtype != "" {
 		switch *outputtype {
 		case "full":
-			OUTPUT_TYPE = Full
+			output = Full
 			break
 		case "prompt":
-			OUTPUT_TYPE = Prompt
+			output = Prompt
 			break
 		case "statusline":
-			OUTPUT_TYPE = StatusLine
+			output = StatusLine
 			break
 		default:
-			panic("Invalid format passed to --output, " + *outputtype)
+			return Request{}, DaemonOptions{Enabled: false}, fmt.Errorf("invalid format passed to --output: '%s'", *outputtype)
 		}
 	}
 
+	var vcs RepoType
 	if *vcstype != "" {
 		switch *vcstype {
 		case "detect":
-			REPO_TYPE = Detect
+			vcs = Detect
 			break
 		case "git":
-			REPO_TYPE = Git
+			vcs = Git
 			break
 		case "hg":
 		case "mercurial":
-			REPO_TYPE = Mercurial
+			vcs = Mercurial
 			break
 		default:
-			panic("Invalid vcs system passed to --vcs, " + *vcstype)
+			return Request{}, DaemonOptions{Enabled: false}, fmt.Errorf("invalid vcs system passed to --vcs: '%s'", *vcstype)
 		}
 	}
 
+	socket := *sockpath
+	if socket == "" {
+		socket = os.ExpandEnv("$HOME") + "/.vcsstatus-sock"
+	}
+
+	return Request{
+		ForceColor: *forcecolor,
+		Directory: dir,
+		Output: output,
+		Vcs: vcs,
+	}, DaemonOptions{Enabled: *daemon, SockPath: socket}, nil
 }
 
-func loadRepo() *RepoInfo {
+func loadRepo(req Request) *RepoInfo {
 
-	switch REPO_TYPE {
+	switch req.Vcs {
 	case Git:
-		return NewGitRepoInfo(&WORKING_DIRECTORY)
+		return NewGitRepoInfo(&req.Directory)
 	case Mercurial:
-		return NewMercurialRepoInfo(&WORKING_DIRECTORY)
+		return NewMercurialRepoInfo(&req.Directory)
 	}
 
 	// cases Detect, default, and other invalid options
 	var info *RepoInfo
 
 	// Git first
-	info = NewGitRepoInfo(&WORKING_DIRECTORY)
+	info = NewGitRepoInfo(&req.Directory)
 	if info != nil && info.IsRepo {
 		// It was a git repo
 		return info
 	}
 
 	// Mercurial next
-	info = NewMercurialRepoInfo(&WORKING_DIRECTORY)
+	info = NewMercurialRepoInfo(&req.Directory)
 	if info != nil && info.IsRepo {
 		// It was a hg repo
 		return info
@@ -124,43 +150,64 @@ func loadRepo() *RepoInfo {
 	return nil
 }
 
-func main() {
-	parseOptions()
-
-	if WORKING_DIRECTORY == "" {
-		os.Exit(2)
-	}
-
-	info := loadRepo()
-
-	if info == nil {
-		os.Exit(1)
-	}
-
-	switch OUTPUT_TYPE {
+func buildResponse(req Request, info *RepoInfo) string {
+	switch req.Output {
 	case Prompt:
-		fmt.Printf("%s%s%s%s", info.VCS.Colored, info.VCSColor.Sprint(":<"), info.BranchName.Colored, info.VCSColor.Sprint(">"))
+		var response strings.Builder
+		response.WriteString(fmt.Sprintf("%s%s%s%s", info.VCS.Colored, info.VCSColor.Sprint(":<"), info.BranchName.Colored, info.VCSColor.Sprint(">")))
 		if len(info.OtherBranches) > 0 {
 			// Get just the colored names
 			branches := []string{}
 			for _, b := range info.OtherBranches {
 				branches = append(branches, b.Colored)
 			}
-			fmt.Printf(" {%s}", strings.Join(branches, ", "))
+			response.WriteString(fmt.Sprintf(" {%s}", strings.Join(branches, ", ")))
 		}
-		fmt.Println()
-		fmt.Println(info.Status.Colored)
-		os.Exit(0)
+		response.WriteString("\n")
+		response.WriteString(info.Status.Colored + "\n")
+		return response.String()
 	case StatusLine:
-		fmt.Println(info.VCS.Colored)
-		fmt.Println(info.RepoName)
-		fmt.Println(info.BranchTrackingInfo.Colored)
-		fmt.Println(info.Status.Colored)
-		fmt.Println(info.RepoPath)
-		os.Exit(0)
+		var response strings.Builder
+		response.WriteString(info.VCS.Colored + "\n")
+		response.WriteString(info.RepoName + "\n")
+		response.WriteString(info.BranchTrackingInfo.Colored + "\n")
+		response.WriteString(info.Status.Colored + "\n")
+		response.WriteString(info.RepoPath + "\n")
+		return response.String()
 	}
 
 	// Full and default output types
 	output, _ := json.MarshalIndent(info, "", " ")
-	fmt.Println(string(output))
+	return string(output) + "\n"
+}
+
+func singleMain(req Request) {
+	if req.Directory == "" {
+		os.Exit(2)
+	}
+
+	info := loadRepo(req)
+
+	if info == nil {
+		os.Exit(1)
+	}
+
+	fmt.Print(buildResponse(req, info))
+}
+
+func daemonMain(req Request) {
+	panic("Not implemented.")
+}
+
+func main() {
+	req, daemon, err := parseOptions()
+	if err != nil {
+		panic(err)
+	}
+
+	if daemon.Enabled {
+		daemonMain(req)
+	} else {
+		singleMain(req)
+	}
 }
