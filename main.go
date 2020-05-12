@@ -32,17 +32,19 @@ const (
 type ExecutionType int
 
 const (
-	SingleUse ExecutionType = 0
-	Daemon    ExecutionType = 1
-	Client    ExecutionType = 2
+	SingleUse   ExecutionType = 0
+	Daemon      ExecutionType = 1
+	Client      ExecutionType = 2
+	DaemonCheck ExecutionType = 3
 )
 
 // Vcs Status Request
 type Request struct {
-	ForceColor bool
-	Directory  string
-	Output     OutputType
-	Vcs        RepoType
+	ForceColor  bool
+	Directory   string
+	Output      OutputType
+	Vcs         RepoType
+	StatusCheck bool
 }
 
 // Execution options
@@ -63,7 +65,7 @@ func parseOptions() (Request, ExecutionOptions, error) {
 
 	vcstype := getopt.EnumLong("vcs", 'r', []string{"detect", "git", "hg"}, "detect", "Version Control System")
 
-	exectype := getopt.EnumLong("exec", 'X', []string{"singleuse", "daemon", "client"}, "singleuse", "How to invoke vcsstatus.  Listen for requests as a daemon, connect to a daemon as a client, or run single-use.")
+	exectype := getopt.EnumLong("exec", 'X', []string{"singleuse", "daemon", "client", "daemoncheck"}, "singleuse", "How to invoke vcsstatus.  Listen for requests as a daemon, connect to a daemon as a client, or run single-use.")
 
 	socketpath := getopt.StringLong("socketpath", 'S', "", "What path to listen/connect on (for daemon/client) Defaults to $HOME/.vcsstatus-sock")
 
@@ -128,6 +130,9 @@ func parseOptions() (Request, ExecutionOptions, error) {
 		break
 	case "client":
 		exec = Client
+		break
+	case "daemoncheck":
+		exec = DaemonCheck
 		break
 	default:
 		return Request{}, ExecutionOptions{}, fmt.Errorf("invalid execution type passed to --exec: '%s'", *exectype)
@@ -270,7 +275,11 @@ func handleConnection(connection net.Conn) {
 		return
 	}
 
-	log.Printf("Got request: %s", req)
+	if req.StatusCheck {
+		// All we need to do is say we're up
+		writeResponse(connection, "OK\n")
+		return
+	}
 
 	// Load repo
 	repo := loadRepo(req)
@@ -319,6 +328,7 @@ func clientMain(req Request, options ExecutionOptions) {
 	if err != nil {
 		log.Fatalf("Error connecting to '%s': %s", options.SocketPath, err)
 	}
+	defer connection.Close()
 
 	encoder := json.NewEncoder(connection)
 	err = encoder.Encode(req)
@@ -337,6 +347,38 @@ func clientMain(req Request, options ExecutionOptions) {
 	}
 }
 
+func daemonCheckMain(options ExecutionOptions) {
+	connection, err := net.Dial("unix", options.SocketPath)
+	if err != nil {
+		log.Printf("Failed to connect to socket: '%s': %s", options.SocketPath, err)
+		os.Exit(1)
+	}
+	defer connection.Close()
+
+	req := Request{
+		StatusCheck: true,
+	}
+	encoder := json.NewEncoder(connection)
+	err = encoder.Encode(req)
+	if err != nil {
+		log.Fatalf("Error encoding request: %s", err)
+		os.Exit(127)
+	}
+
+	reader := bufio.NewReader(connection)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		log.Fatalf("Error reading line from connection: %s", err)
+		os.Exit(2)
+	}
+	if strings.Contains(line, "OK") {
+		os.Exit(0)
+	} else {
+		log.Fatalf("Got invalid response from server: '%s'", line)
+		os.Exit(3)
+	}
+}
+
 func main() {
 	req, options, err := parseOptions()
 	if err != nil {
@@ -350,6 +392,10 @@ func main() {
 	case Client:
 		clientMain(req, options)
 		break
+	case DaemonCheck:
+		daemonCheckMain(options)
+		break
+
 	case SingleUse:
 	default:
 		singleMain(req)
