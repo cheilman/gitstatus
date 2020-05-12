@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/fatih/color"
 	"github.com/pborman/getopt/v2"
+	"io/ioutil"
+	"log"
+	"net"
 	"os"
 	"strings"
 )
@@ -25,34 +29,45 @@ const (
 	Mercurial RepoType = 2
 )
 
+type ExecutionType int
+
+const (
+	SingleUse ExecutionType = 0
+	Daemon    ExecutionType = 1
+	Client    ExecutionType = 2
+)
+
 // Vcs Status Request
 type Request struct {
 	ForceColor bool
-	Directory string
-	Output OutputType
-	Vcs RepoType
+	Directory  string
+	Output     OutputType
+	Vcs        RepoType
 }
 
-// Daemon startup options
-type DaemonOptions struct {
-	Enabled bool
-	SockPath string
+// Execution options
+type ExecutionOptions struct {
+	Execution            ExecutionType
+	SocketPath           string
+	ForceSocketOverwrite bool
 }
 
-func parseOptions() (Request, DaemonOptions, error) {
+func parseOptions() (Request, ExecutionOptions, error) {
 	// Set up options
 	forcecolor := getopt.BoolLong("color", 'c', "Force colored output.")
 
 	workingdir := getopt.StringLong("dir", 'd', "",
 		"The working directory to pretend we're in.\nNOTE: Tilde (~) exp    ansion is best-effort and should not be relied on.")
 
-	outputtype := getopt.StringLong("output", 'o', "full", "Output format, from [full, prompt, statusline]")
+	outputtype := getopt.EnumLong("output", 'o', []string{"full", "prompt", "statusline"}, "full", "Output format")
 
-	vcstype := getopt.StringLong("vcs", 'r', "detect", "Version Control System, from [detect, git, hg]")
+	vcstype := getopt.EnumLong("vcs", 'r', []string{"detect", "git", "hg"}, "detect", "Version Control System")
 
-	daemon := getopt.BoolLong("daemon", 'D', "Run as a daemon, listening on a socket for requests (does not fork).")
+	exectype := getopt.EnumLong("exec", 'X', []string{"singleuse", "daemon", "client"}, "singleuse", "How to invoke vcsstatus.  Listen for requests as a daemon, connect to a daemon as a client, or run single-use.")
 
-	sockpath := getopt.StringLong("socketpath",  'S', "", "What path to create a listening socket on?  Defaults to $HOME/.vcsstatus-sock")
+	socketpath := getopt.StringLong("socketpath", 'S', "", "What path to listen/connect on (for daemon/client) Defaults to $HOME/.vcsstatus-sock")
+
+	overwritesocket := getopt.BoolLong("overwritesocket", 'O', "If the socketpath exists, overwrite it.")
 
 	// Parse
 
@@ -67,57 +82,72 @@ func parseOptions() (Request, DaemonOptions, error) {
 	if dir == "" {
 		fullPath, err := os.Getwd()
 		if err != nil {
-			return Request{}, DaemonOptions{Enabled: false}, err
+			return Request{}, ExecutionOptions{}, err
 		}
 		dir = fullPath
 	}
 
 	var output OutputType
-	if *outputtype != "" {
-		switch *outputtype {
-		case "full":
-			output = Full
-			break
-		case "prompt":
-			output = Prompt
-			break
-		case "statusline":
-			output = StatusLine
-			break
-		default:
-			return Request{}, DaemonOptions{Enabled: false}, fmt.Errorf("invalid format passed to --output: '%s'", *outputtype)
-		}
+	switch *outputtype {
+	case "full":
+		output = Full
+		break
+	case "prompt":
+		output = Prompt
+		break
+	case "statusline":
+		output = StatusLine
+		break
+	default:
+		return Request{}, ExecutionOptions{}, fmt.Errorf("invalid format passed to --output: '%s'", *outputtype)
 	}
 
 	var vcs RepoType
-	if *vcstype != "" {
-		switch *vcstype {
-		case "detect":
-			vcs = Detect
-			break
-		case "git":
-			vcs = Git
-			break
-		case "hg":
-		case "mercurial":
-			vcs = Mercurial
-			break
-		default:
-			return Request{}, DaemonOptions{Enabled: false}, fmt.Errorf("invalid vcs system passed to --vcs: '%s'", *vcstype)
-		}
+	switch *vcstype {
+	case "detect":
+		vcs = Detect
+		break
+	case "git":
+		vcs = Git
+		break
+	case "hg":
+	case "mercurial":
+		vcs = Mercurial
+		break
+	default:
+		return Request{}, ExecutionOptions{}, fmt.Errorf("invalid vcs system passed to --vcs: '%s'", *vcstype)
 	}
 
-	socket := *sockpath
+	var exec ExecutionType
+	switch *exectype {
+	case "singleuse":
+		exec = SingleUse
+		break
+	case "daemon":
+		exec = Daemon
+		break
+	case "client":
+		exec = Client
+		break
+	default:
+		return Request{}, ExecutionOptions{}, fmt.Errorf("invalid execution type passed to --exec: '%s'", *exectype)
+	}
+
+	socket := *socketpath
 	if socket == "" {
 		socket = os.ExpandEnv("$HOME") + "/.vcsstatus-sock"
 	}
 
 	return Request{
-		ForceColor: *forcecolor,
-		Directory: dir,
-		Output: output,
-		Vcs: vcs,
-	}, DaemonOptions{Enabled: *daemon, SockPath: socket}, nil
+			ForceColor: *forcecolor,
+			Directory:  dir,
+			Output:     output,
+			Vcs:        vcs,
+		}, ExecutionOptions{
+			Execution:            exec,
+			SocketPath:           socket,
+			ForceSocketOverwrite: *overwritesocket},
+		nil
 }
 
 func loadRepo(req Request) *RepoInfo {
@@ -150,7 +180,7 @@ func loadRepo(req Request) *RepoInfo {
 	return nil
 }
 
-func buildResponse(req Request, info *RepoInfo) string {
+func buildResponse(req Request, info RepoInfo) string {
 	switch req.Output {
 	case Prompt:
 		var response strings.Builder
@@ -192,22 +222,137 @@ func singleMain(req Request) {
 		os.Exit(1)
 	}
 
-	fmt.Print(buildResponse(req, info))
+	fmt.Print(buildResponse(req, *info))
 }
 
-func daemonMain(req Request) {
-	panic("Not implemented.")
+func cleanUpExistingSocket(options ExecutionOptions) {
+	_, err := os.Stat(options.SocketPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File not found, good!
+			return
+		}
+
+		// Any error other than file not found
+		log.Fatalf("Error reading socket path '%s': %s", options.SocketPath, err)
+	}
+
+	if options.ForceSocketOverwrite {
+		// Allow us to overwrite existing files
+		if err := os.RemoveAll(options.SocketPath); err == nil {
+			// Successfully deleted
+			return
+		}
+		log.Fatalf("Could not remove existing file at '%s': %s", options.SocketPath, err)
+	}
+}
+
+func writeResponse(connection net.Conn, response string) {
+	writer := bufio.NewWriter(connection)
+	_, err := writer.WriteString(response)
+	if err == nil {
+		_ = writer.Flush()
+	} else {
+		log.Printf("Error writing response: %s", err)
+	}
+}
+
+func handleConnection(connection net.Conn) {
+	//noinspection GoUnhandledErrorResult
+	defer connection.Close()
+
+	decoder := json.NewDecoder(connection)
+
+	var req Request
+	err := decoder.Decode(&req)
+	if err != nil {
+		writeResponse(connection, fmt.Sprintf("Error decoding request: %s\n", err))
+		return
+	}
+
+	log.Printf("Got request: %s", req)
+
+	// Load repo
+	repo := loadRepo(req)
+	if repo == nil {
+		writeResponse(connection, "Error loading repository information.\n")
+		return
+	}
+
+	// Build response
+	response := buildResponse(req, *repo)
+	writeResponse(connection, response)
+}
+
+func daemonMain(options ExecutionOptions) {
+	cleanUpExistingSocket(options)
+
+	// At this point we should be clear to create a socket
+	listener, err := net.Listen("unix", options.SocketPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// TODO: Handle ctrl-c better!
+	defer func() {
+		fmt.Println("Shutting down...")
+		err := listener.Close()
+		if err != nil {
+			log.Fatalf("Failed to close listener: %s", err)
+		}
+	}()
+
+	log.Printf("Listening on: %s", options.SocketPath)
+
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			log.Printf("Error accepting: %s", err)
+			continue
+		}
+
+		go handleConnection(connection)
+	}
+}
+
+func clientMain(req Request, options ExecutionOptions) {
+	connection, err := net.Dial("unix", options.SocketPath)
+	if err != nil {
+		log.Fatalf("Error connecting to '%s': %s", options.SocketPath, err)
+	}
+
+	encoder := json.NewEncoder(connection)
+	err = encoder.Encode(req)
+	if err != nil {
+		log.Fatalf("Error encoding request: %s", err)
+	}
+
+	response, err := ioutil.ReadAll(connection)
+	if err != nil {
+		log.Fatalf("Error reading all from connection: %s", err)
+	}
+
+	_, err = os.Stdout.Write(response)
+	if err != nil {
+		log.Fatalf("Error outputting response: %s", err)
+	}
 }
 
 func main() {
-	req, daemon, err := parseOptions()
+	req, options, err := parseOptions()
 	if err != nil {
 		panic(err)
 	}
 
-	if daemon.Enabled {
-		daemonMain(req)
-	} else {
+	switch options.Execution {
+	case Daemon:
+		daemonMain(options)
+		break
+	case Client:
+		clientMain(req, options)
+		break
+	case SingleUse:
+	default:
 		singleMain(req)
+		break
 	}
 }
