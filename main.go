@@ -194,6 +194,7 @@ func loadRepo(req Request) *RepoInfo {
 
 func buildResponse(req Request, info *RepoInfo) Response {
 	// TODO: Color handling isn't thread-safe / handles multiple requests well
+	// TODO: Color support doesn't work the first time w/ daemons
 	color.NoColor = !req.ForceColor
 
 	if req.Directory == "" {
