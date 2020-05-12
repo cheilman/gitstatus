@@ -10,7 +10,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 type OutputType int
@@ -296,25 +298,46 @@ func handleConnection(connection net.Conn) {
 func daemonMain(options ExecutionOptions) {
 	cleanUpExistingSocket(options)
 
+	// Handle shutdown better
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	// At this point we should be clear to create a socket
 	listener, err := net.Listen("unix", options.SocketPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// TODO: Handle ctrl-c better!
-	defer func() {
-		fmt.Println("Shutting down...")
+
+	// Try to have clean shutdowns
+	done := false
+	shutdown := func() {
+		log.Printf("Shutting down...")
+		done = true
+
+		// Cleanup
+		log.Printf("Closing listener")
 		err := listener.Close()
 		if err != nil {
-			log.Fatalf("Failed to close listener: %s", err)
+			log.Printf("Failed to close listener: %s", err)
 		}
+	}
+
+	// Cleanup on signal
+	go func() {
+		sig := <-sigs
+		log.Printf("Received signal: %s", sig)
+		shutdown()
 	}()
 
 	log.Printf("Listening on: %s", options.SocketPath)
 
-	for {
+	for !done {
 		connection, err := listener.Accept()
 		if err != nil {
+			if done {
+				break
+			}
+
 			log.Printf("Error accepting: %s", err)
 			continue
 		}
