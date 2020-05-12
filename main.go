@@ -188,6 +188,9 @@ func loadRepo(req Request) *RepoInfo {
 }
 
 func buildResponse(req Request, info RepoInfo) string {
+	// TODO: Color handling isn't thread-safe / handles multiple requests well
+	color.NoColor = !req.ForceColor
+
 	switch req.Output {
 	case Prompt:
 		var response strings.Builder
