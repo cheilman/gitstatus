@@ -371,6 +371,8 @@ func clientMain(req Request, options ExecutionOptions) {
 	if err != nil {
 		log.Fatalf("Error outputting response: %s", err)
 	}
+
+	// TODO: Need to handle errors better/have an exit code
 }
 
 func daemonCheckMain(options ExecutionOptions) {
@@ -421,8 +423,8 @@ func main() {
 	case DaemonCheck:
 		daemonCheckMain(options)
 		break
-
 	case SingleUse:
+		fallthrough
 	default:
 		singleMain(req)
 		break
