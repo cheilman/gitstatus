@@ -33,10 +33,11 @@ const (
 type ExecutionType int
 
 const (
-	SingleUse   ExecutionType = 0
-	Daemon      ExecutionType = 1
-	Client      ExecutionType = 2
-	DaemonCheck ExecutionType = 3
+	SingleUse          ExecutionType = 0
+	Daemon             ExecutionType = 1
+	Client             ExecutionType = 2
+	DaemonCheck        ExecutionType = 4
+	ClientWithFallback ExecutionType = 3
 )
 
 // Vcs Status Request
@@ -72,7 +73,7 @@ func parseOptions() (Request, ExecutionOptions, error) {
 
 	vcstype := getopt.EnumLong("vcs", 'r', []string{"detect", "git", "hg"}, "detect", "Version Control System")
 
-	exectype := getopt.EnumLong("exec", 'X', []string{"singleuse", "daemon", "client", "daemoncheck"}, "singleuse", "How to invoke vcsstatus.  Listen for requests as a daemon, connect to a daemon as a client, or run single-use.")
+	exectype := getopt.EnumLong("exec", 'X', []string{"singleuse", "daemon", "client", "daemoncheck", "clientfallback"}, "singleuse", "How to invoke vcsstatus.  Listen for requests as a daemon, connect to a daemon as a client, or run single-use.")
 
 	socketpath := getopt.StringLong("socketpath", 'S', "", "What path to listen/connect on (for daemon/client) Defaults to $HOME/.vcsstatus-sock")
 
@@ -120,6 +121,7 @@ func parseOptions() (Request, ExecutionOptions, error) {
 		vcs = Git
 		break
 	case "hg":
+		fallthrough
 	case "mercurial":
 		vcs = Mercurial
 		break
@@ -140,6 +142,9 @@ func parseOptions() (Request, ExecutionOptions, error) {
 		break
 	case "daemoncheck":
 		exec = DaemonCheck
+		break
+	case "clientfallback":
+		exec = ClientWithFallback
 		break
 	default:
 		return Request{}, ExecutionOptions{}, fmt.Errorf("invalid execution type passed to --exec: '%s'", *exectype)
@@ -360,8 +365,15 @@ func daemonMain(options ExecutionOptions) {
 func clientMain(req Request, options ExecutionOptions) {
 	connection, err := net.Dial("unix", options.SocketPath)
 	if err != nil {
-		log.Fatalf("Error connecting to '%s': %s", options.SocketPath, err)
+		if options.Execution == ClientWithFallback {
+			log.Printf("Error connecting to '%s': %s", options.SocketPath, err)
+			// Try single use too
+			singleMain(req)
+		} else {
+			log.Fatalf("Error connecting to '%s': %s", options.SocketPath, err)
+		}
 	}
+	//noinspection GoUnhandledErrorResult
 	defer connection.Close()
 
 	encoder := json.NewEncoder(connection)
@@ -388,9 +400,9 @@ func clientMain(req Request, options ExecutionOptions) {
 func daemonCheckMain(options ExecutionOptions) {
 	connection, err := net.Dial("unix", options.SocketPath)
 	if err != nil {
-		log.Printf("Failed to connect to socket: '%s': %s", options.SocketPath, err)
-		os.Exit(1)
+		log.Fatalf("Failed to connect to socket: '%s': %s", options.SocketPath, err)
 	}
+	//noinspection GoUnhandledErrorResult
 	defer connection.Close()
 
 	req := Request{
@@ -400,7 +412,6 @@ func daemonCheckMain(options ExecutionOptions) {
 	err = encoder.Encode(req)
 	if err != nil {
 		log.Fatalf("Error encoding request: %s", err)
-		os.Exit(127)
 	}
 
 	decoder := json.NewDecoder(connection)
@@ -423,6 +434,8 @@ func main() {
 	case Daemon:
 		daemonMain(options)
 		break
+	case ClientWithFallback:
+		fallthrough
 	case Client:
 		clientMain(req, options)
 		break
